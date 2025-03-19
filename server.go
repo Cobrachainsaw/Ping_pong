@@ -11,8 +11,8 @@ import (
 )
 
 type GameState struct {
-	Ball    Ball    `json:"ball"`
-	Paddles Paddles `json:"paddles"`
+	Ball    Ball     `json:"ball"`
+	Paddles []Paddle `json:"paddles"` // Now an array of paddles
 }
 
 type Ball struct {
@@ -20,8 +20,11 @@ type Ball struct {
 	VX, VY int
 }
 
-type Paddles struct {
-	Top, Bottom, Left, Right int
+type Paddle struct {
+	X      int `json:"x"`
+	Y      int `json:"y"` // ✅ Correct: "y" instead of "x"
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
 type Client struct {
@@ -29,14 +32,18 @@ type Client struct {
 }
 
 var (
-	clients   = make(map[*Client]bool)
-	broadcast = make(chan GameState)
-	upgrader  = websocket.Upgrader{
+	clients      = make(map[*Client]bool)
+	clientsMutex sync.Mutex
+	broadcast    = make(chan GameState)
+	upgrader     = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true },
 	}
 	gameState = GameState{
-		Ball:    Ball{X: 300, Y: 300, VX: 3, VY: 3},
-		Paddles: Paddles{Top: 250, Bottom: 250, Left: 250, Right: 250},
+		Ball: Ball{X: 300, Y: 300, VX: 3, VY: 3},
+		Paddles: []Paddle{
+			{X: 50, Y: 250, Width: 10, Height: 50},  // Left Paddle
+			{X: 540, Y: 250, Width: 10, Height: 50}, // Right Paddle
+		},
 	}
 	mutex sync.Mutex
 )
@@ -48,10 +55,15 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := &Client{conn: conn}
+
+	clientsMutex.Lock()
 	clients[client] = true
+	clientsMutex.Unlock()
 
 	defer func() {
+		clientsMutex.Lock()
 		delete(clients, client)
+		clientsMutex.Unlock()
 		conn.Close()
 	}()
 
@@ -64,24 +76,15 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		}
 
 		mutex.Lock()
-		// Handle paddle movement
 		switch msg["key"] {
-		case "a":
-			gameState.Paddles.Top -= 10
-		case "d":
-			gameState.Paddles.Top += 10
-		case "j":
-			gameState.Paddles.Bottom -= 10
-		case "l":
-			gameState.Paddles.Bottom += 10
 		case "w":
-			gameState.Paddles.Left -= 10
+			gameState.Paddles[0].Y -= 10 // Move left paddle up
 		case "s":
-			gameState.Paddles.Left += 10
-		case "i":
-			gameState.Paddles.Right -= 10
-		case "k":
-			gameState.Paddles.Right += 10
+			gameState.Paddles[0].Y += 10 // Move left paddle down
+		case "ArrowUp":
+			gameState.Paddles[1].Y -= 10 // Move right paddle up
+		case "ArrowDown":
+			gameState.Paddles[1].Y += 10 // Move right paddle down
 		}
 		mutex.Unlock()
 	}
@@ -111,9 +114,11 @@ func handleBroadcast() {
 	for {
 		state := <-broadcast
 		jsonState, _ := json.Marshal(state)
+		clientsMutex.Lock()
 		for client := range clients {
 			client.conn.WriteMessage(websocket.TextMessage, jsonState)
 		}
+		clientsMutex.Unlock()
 	}
 }
 
